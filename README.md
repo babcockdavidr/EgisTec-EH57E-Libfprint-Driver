@@ -20,7 +20,11 @@ hardware.** Expect to iterate; the debug output is there for that.
     cd tests && cc -O2 -I../driver -o frame_selftest frame_selftest.c -lm && ./frame_selftest
 
 ## Build on Arch / CachyOS
-Package-managed, so it never fights pacman:
+Easiest: one command, no manual edits (it does everything below and verifies each step):
+
+    bash tools/install-arch.sh
+
+What it automates, step by step (package-managed, so it never fights pacman):
 
     pkgctl repo clone --protocol=https libfprint && cd libfprint     # Arch's PKGBUILD
     # unpack the source (makepkg -o), then register the driver in the unpacked tree:
@@ -61,3 +65,9 @@ of `egis057e.c`, which records how this protocol was found and which detours to 
 - If the sensor is not listed by `fprintd-list`, check `lsusb | grep 1c7a` and `journalctl -u fprintd -b`.
 - Known unknowns when written (see docs/SECURITY.md, docs/PROTOCOL.md): real frames/s, auto-calibration,
   behaviour on other units, and N-of-M voting (needs a policy layer above libfprint).
+
+## If the driver does not show up after install
+`strings /usr/lib/libfprint-2.so.2 | grep -c egis057e` must print a number above 0, and fprintd's debug output
+must NOT say "No driver found for USB device 1C7A:057E". If it does, the build files were not patched:
+`tools/add_to_libfprint_tree.py` prints `VERIFIED` only when both `meson.build` files list the driver and a
+loud `FAILED` banner otherwise. It knows three layouts (1.94.9, 1.94.100/Arch dict style, 1.95.x).

@@ -3,7 +3,7 @@
 
     python3 add_to_libfprint_tree.py PATH/TO/libfprint-source
 
-Idempotent (safe to run twice). Handles the three layouts of libfprint/meson.build found in 1.94.x and 1.95.x.
+Idempotent (safe to run twice). Handles the layouts of libfprint/meson.build and meson.build found in 1.94.x, 1.94.100 (Arch) and 1.95.x.
 If a pattern is not found it says exactly which line to add by hand.
 """
 import os
@@ -67,14 +67,33 @@ def main():
     def top_meson(t):
         if "egis057e" in t:
             return t
-        out, n = re.subn(r"^(\s*)'egis0570',\s*\n", lambda m: m.group(0) + f"{m.group(1)}'egis057e',\n", t, flags=re.M)
-        return out if n else None
+        n_total = 0
+        # list layout (1.94.9, 1.95.x):    'egis0570',
+        t, n = re.subn(r"^(\s*)'egis0570',\s*\n", lambda m: m.group(0) + f"{m.group(1)}'egis057e',\n", t, flags=re.M)
+        n_total += n
+        # dict layout (Arch 1.94.100 / newer git):    'egis0570': {},
+        t, n = re.subn(r"^(\s*)'egis0570'\s*:\s*\{\s*\},?\s*\n",
+                       lambda m: m.group(0) + f"{m.group(1)}'egis057e': {{}},\n", t, flags=re.M)
+        n_total += n
+        return t if n_total else None
 
     ok = edit(os.path.join(tree, "libfprint", "meson.build"), lib_meson, "libfprint/meson.build driver entry")
     ok &= edit(os.path.join(tree, "meson.build"), top_meson, "meson.build driver lists")
-    print("\nDone." if ok else "\nFinished with warnings.")
-    print("Configure with e.g.:  meson setup build -Ddrivers=all   (or add egis057e to your driver list)")
-    return 0 if ok else 1
+
+    # Verify by re-reading: the driver must be named in BOTH build files.
+    for rel in (os.path.join("libfprint", "meson.build"), "meson.build"):
+        with open(os.path.join(tree, rel)) as fh:
+            if "egis057e" not in fh.read():
+                ok = False
+    if ok:
+        print("\nVERIFIED: egis057e is registered in both meson.build files.")
+        print("Now rebuild and install, e.g.:  makepkg -e -f -si --nocheck")
+        return 0
+    print("\n" + "!" * 70)
+    print("FAILED: the driver is NOT fully registered; a build now would silently leave it out.")
+    print("Send the output of:  grep -n -B1 -A2 egis0570 " + os.path.join(tree, "meson.build"))
+    print("!" * 70)
+    return 1
 
 
 if __name__ == "__main__":
