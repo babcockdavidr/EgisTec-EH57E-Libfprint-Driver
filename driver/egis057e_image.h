@@ -140,6 +140,111 @@ egis057e_frame_ncc (const uint8_t *a, const uint8_t *b)
   return sab / sqrt (saa * sbb + 1e-9);
 }
 
+
+/* ---- preprocessing for libfprint's matcher ---------------------------------
+ * libfprint extracts minutiae with NBIS, which was designed for much larger
+ * images.  On the raw 70x57 frames it finds 0-3 minutiae (zero in 12 of 17
+ * real frames) and can never reach a usable match score.  Mirroring the frame
+ * outward by EGIS057E_PAD_PX pixels on every side gives NBIS the surrounding
+ * area it expects; it then finds 9-30 minutiae per frame and scores two
+ * presses of the same spot around 80.  The padding is synthetic (mirrored)
+ * data: it adds no new information, so treat the matcher's output on this
+ * sensor as less trustworthy than on a full-size reader (see docs/SECURITY.md).
+ * Set to 0 to submit the raw frame. */
+#ifndef EGIS057E_PAD_PX
+#define EGIS057E_PAD_PX 32
+#endif
+
+static inline void
+egis057e_pad_reflect (const uint8_t *src, uint8_t *dst, int pad)
+{
+  int w2 = EGIS057E_FRAME_W + 2 * pad, h2 = EGIS057E_FRAME_H + 2 * pad;
+  int x, y;
+
+  for (y = 0; y < h2; y++)
+    for (x = 0; x < w2; x++)
+      {
+        int sx = x - pad, sy = y - pad;
+
+        if (sx < 0)
+          sx = -sx;
+        if (sx >= EGIS057E_FRAME_W)
+          sx = 2 * EGIS057E_FRAME_W - 2 - sx;
+        if (sx < 0)
+          sx = 0;
+        if (sy < 0)
+          sy = -sy;
+        if (sy >= EGIS057E_FRAME_H)
+          sy = 2 * EGIS057E_FRAME_H - 2 - sy;
+        if (sy < 0)
+          sy = 0;
+        dst[y * w2 + x] = src[sy * EGIS057E_FRAME_W + sx];
+      }
+}
+
+/* ---- enrollment coverage ---------------------------------------------------
+ * The Windows software makes you press the centre a few times and then other
+ * parts of the same finger.  libfprint cannot ask for that, so the driver does
+ * it: the first EGIS057E_ENROLL_REPEATS presses may be anywhere; after that a
+ * press that looks like an area already captured is bounced with "lift and
+ * try again", so the stored prints cover more of the finger.
+ * "Looks like" = best normalised correlation over +-EGIS057E_ENROLL_SHIFT px.
+ * Measured on real frames: same spot 0.80-1.00, different spots mean 0.22. */
+#ifndef EGIS057E_ENROLL_REPEATS
+#define EGIS057E_ENROLL_REPEATS 3
+#endif
+#ifndef EGIS057E_ENROLL_SHIFT
+#define EGIS057E_ENROLL_SHIFT 8
+#endif
+#ifndef EGIS057E_ENROLL_SIMILAR_NCC
+#define EGIS057E_ENROLL_SIMILAR_NCC 0.75
+#endif
+
+/* Best normalised cross-correlation of a and b over all shifts up to max_shift
+ * pixels in each direction, using only overlaps of at least half a frame. */
+static inline double
+egis057e_shifted_ncc (const uint8_t *a, const uint8_t *b, int max_shift)
+{
+  double best = -1.0;
+  int dx, dy;
+
+  for (dy = -max_shift; dy <= max_shift; dy++)
+    for (dx = -max_shift; dx <= max_shift; dx++)
+      {
+        int x0 = dx > 0 ? dx : 0, x1 = dx < 0 ? EGIS057E_FRAME_W + dx : EGIS057E_FRAME_W;
+        int y0 = dy > 0 ? dy : 0, y1 = dy < 0 ? EGIS057E_FRAME_H + dy : EGIS057E_FRAME_H;
+        int x, y, n = (x1 - x0) * (y1 - y0);
+        double ma = 0, mb = 0, saa = 0, sbb = 0, sab = 0;
+
+        if (2 * n < EGIS057E_FRAME_W * EGIS057E_FRAME_H)
+          continue;
+        for (y = y0; y < y1; y++)
+          for (x = x0; x < x1; x++)
+            {
+              ma += a[y * EGIS057E_FRAME_W + x];
+              mb += b[(y - dy) * EGIS057E_FRAME_W + (x - dx)];
+            }
+        ma /= n;
+        mb /= n;
+        for (y = y0; y < y1; y++)
+          for (x = x0; x < x1; x++)
+            {
+              double da = a[y * EGIS057E_FRAME_W + x] - ma;
+              double db = b[(y - dy) * EGIS057E_FRAME_W + (x - dx)] - mb;
+              saa += da * da;
+              sbb += db * db;
+              sab += da * db;
+            }
+        if (saa > 0 && sbb > 0)
+          {
+            double c = sab / sqrt (saa * sbb);
+            if (c > best)
+              best = c;
+          }
+      }
+  return best;
+}
+
 /* ------------------------------------------------------------------------ */
 
 typedef enum
